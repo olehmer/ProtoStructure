@@ -1,3 +1,7 @@
+#Owen Lehmer 11/1/16
+#University of Washington, Seattle, WA
+#Department of Earth and Space Sciences
+
 class Layer:
     """
     This class is the basic structure for our model. The atmosphere is 
@@ -6,7 +10,7 @@ class Layer:
     T, etc.).
     """
     def __init__(self, T=-1.0, p_top=-1.0, p_bot=-1.0, rho=-1.0, u=-1.0, \
-            du_dr=-1.0, F_uv=-1.0, F_up=-1.0, F_down=-1.0, r=-1.0):
+            du_dr=-1.0, F_uv=-1.0, F_up=-1.0, F_down=-1.0, h=-1.0, r=-1.0):
         self.T = float(T)          #The temp for the layer (assumed isothermal) [K]
         self.p_top = float(p_top)  #The pressure at the top of the layer [Pa]
         self.p_bot = float(p_bot)  #The pressure at the bottom of the layer [Pa]
@@ -16,6 +20,10 @@ class Layer:
         self.F_uv = float(F_uv)    #The downward UV flux from the star [W m-2]
         self.F_up = float(F_up)    #The upward longwave flux at the layer [W m-2]
         self.F_down = float(F_down) #The downward longwave flux [W m-2]
+        self.h = float(h)          #the height of the layer [m]
         self.r = float(r)          #The radial radius of the layer from the surface [m]
+                                   #Note about self.r - this is the radius at 
+                                   #the middle of the layer
+
 
 
