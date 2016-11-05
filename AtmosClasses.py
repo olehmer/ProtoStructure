@@ -8,6 +8,9 @@ class Layer:
     comprised of these Layer class objects. They record all relevant info
     for the given layer (i.e. flux up, flux down, pressure, u, du/dr, density,
     T, etc.).
+
+    IMPORTANT: things set to -1 by default may use that -1 as a check to see
+               if the variable is set. 
     """
     def __init__(self, T=-1.0, p_top=-1.0, p_bot=-1.0, rho=-1.0, m=-1.0, \
             m_below=-1.0, u=0, du_dr=0, F_uv=0, F_up=0, F_down=0,\
