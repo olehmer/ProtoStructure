@@ -29,8 +29,8 @@ class Layer:
         self.F_down = float(F_down) #The downward longwave flux [W m-2]
         self.h = float(h)          #the height of the layer [m]
         self.r = float(r)          #The radial radius of the layer from the surface [m]
-                                   #Note about self.r - this is the radius at 
-                                   #the middle of the layer
+                                   #Note about self.r - this is the radius at the
+                                   #bottom of the layer
 
 
 

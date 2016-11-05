@@ -2,7 +2,7 @@ from AtmosClasses import Layer
 import matplotlib.pyplot as plt
 import numpy as np
 import sys
-from math import e, pi, exp, isnan
+from math import e, pi, exp, isnan, log
 from scipy import optimize
 
 
@@ -54,7 +54,7 @@ def CalculateTopU(layer, R_gas):
 
         return (eqn1, eqn2)
     
-    vals_in = (layer.T, 10.0) #10 is just a guess for the first time
+    vals_in = (layer.T, 1.0) #1 is just a guess for the first time
     if layer.u > 0:
         vals_in = (layer.T, layer.u)
 
@@ -66,6 +66,7 @@ def CalculateTopU(layer, R_gas):
         return (0.0,0.0)
     else:
         cur_loss = 4.0*pi*layer.rho*u*layer.r**2.0
+        print("loss fraction = %f"%(cur_loss/layer.m))
         return (cur_loss, u) 
 
 
@@ -97,8 +98,7 @@ def UpdateLayerVelocity(layers, ind, R_gas, cur_loss):
     if ind==0:
         #this is the top layer, calculate the loss rate from the top layer
         cur_loss, u = CalculateTopU(layers[ind], R_gas)
-        print("cur_loss=",cur_loss)
-        print("u=",u)
+        print("u=%f, cur_loss=%f"%(u, cur_loss))
         layers[ind].u = u
     else:
         #not the top layer, calculate u based on cur_loss
@@ -169,23 +169,21 @@ def UpdateLayerDistance(layers, ind, R_gas, core_rad):
     #scale height is given by RT/(g-u*du/dr)
     #scale height, the altitude for which pressure decreases by e (~1/3)
     H = R_gas*layers[t_ind].T/(g-layers[t_ind].u*layers[t_ind].du_dr)
-    
-    p_factor = layers[t_ind].p_bot/layers[t_ind].p_top 
 
-    delta_r = p_factor*H #this is the height of the layer
-    layers[t_ind].h = delta_r #record the height of the layer
+    delta_r = -H*log(layers[t_ind].p_top/layers[t_ind].p_bot) #this is the height of the layer
 
     if ind == 0:
         #this is the bottom layer
-        layers[t_ind].r = core_rad + delta_r/2.0 #the middle of the layer
-    else:
-        #this isn't the bottom layer
-        layers[t_ind].r = layers[t_ind+1].r +layers[t_ind+1].h/2.0 + delta_r/2.0
+        layers[t_ind].r = core_rad
+        
+    if t_ind != 0:
+        #this isn't the top layer, set the radius of the above layer
+        layers[t_ind-1].r = layers[t_ind].r + delta_r
 
 
 
 
-def UpdateLayerPressure(layers, ind):
+def UpdateLayerPressure(layers, ind, R_gas):
     """
     This function will update the pressure bounds of each layer. This is done
     using P=m*(g-u*du/dr) at each layer then summing from top to bottom.
@@ -193,40 +191,58 @@ def UpdateLayerPressure(layers, ind):
     Inputs:
     layers - the array of layers in the atmosphere
     ind - the index of the current layer to process
+    R_gas - the specific gas constant for the atmosphere
 
     Updates layers directly
     """
 
     g = GG*layers[ind].m_below/layers[ind].r**2.0
     area = 4.0*pi*layers[ind].r**2.0
-    p_layer = layers[ind].m*(g-layers[ind].u*layers[ind].du_dr)
+    p_layer = layers[ind].m*(g-layers[ind].u*layers[ind].du_dr)/area
 
     if ind != 0:
         #this isn't the top layer so add the pressure from the above layers
         p_layer = p_layer + layers[ind-1].p_bot
         layers[ind].p_top = layers[ind-1].p_bot
+    else:
+        #this is the top layer, set the TOA pressure accordingly
+        #scale height is given by RT/(g-u*du/dr)
+        H = R_gas*layers[ind].T/(g-layers[ind].u*layers[ind].du_dr)
+
+        #calculate the number of scale heights the to layers used to be
+        cur_H_count = -log(layers[ind].p_top/layers[ind].p_bot)
+
+        #set the new distance to the same number of scale heights
+        new_dist = H*cur_H_count
+
+        #now calculate the top pressure
+        p_top = p_layer*exp(-new_dist/H)
+        layers[ind].p_top = p_top
 
     layers[ind].p_bot = p_layer
 
-def UpdateTempProfile(layers, T_profile):
+def CheckFluxDiff(layers):
     """
-    Simply loop over the layers and copy the temperature value to T_profile.
-    This will also compute the difference between the old T and the new T.
+    This function will compare the upward flux to the downward flux 
+    to see if the atmosphere is in equilibrium at TOA.
 
-    Input:
-    layers - the atmospheric layers
-    T_profile - the temperature at each atmospheric layer
+    Inputs:
+    layers - the array of atmospheric layers
 
-    Updates T_profile directly
-
-    Return:
-    diff - the difference between the current T_profile and the old one
+    Returns:
+    diff - the difference (in [W m-2]) between the incoming and outgoing flux
     """
 
     diff = 0.0
-    for i in range(0,len(layers)):
-        diff += abs(T_profile[i] - layers[i].T)
-        T_profile[i] = layers[i].T
+
+    #loop over the layers
+    for i in range(0, len(layers)):
+        F_up = layers[i].F_up
+        F_down = layers[i].F_uv + layers[i].F_sol + layers[i].F_down
+
+        cur_diff = abs(F_up - F_down)
+        if cur_diff > diff:
+            diff = cur_diff
 
     return diff
 
@@ -296,7 +312,51 @@ def LayersInit(N, total_flux, core_mass, core_rad, atmos_mass, R_gas,\
 
         cur_mass = cur_mass + mass #increment the total mass
 
+    for i in range(0,N):
+        #Update the distance to each layer
+        UpdateLayerDistance(layers, i, R_gas, core_rad)
+
     return layers
+
+
+
+def BalanceRadiativeTransfer(layers, F_uv, F_sol, F_long, kappa_uv, \
+        kappa_sol, kappa_long, uv_p_ref, sol_p_ref, long_p_ref, R_gas, iter_lim,\
+        tol):
+    """
+    This is a wrapper function to call UpdateLayerRadTrans() and balance the 
+    radiative transfer in the atmosphere. Each time the radial outflow is changed
+    we need to calculate the full radiative balance to keep the model from 
+    going nuts. This function will balance the radiation the layers.
+
+    Inputs:
+    layers - the atmospheric layers layer
+    ground_ T- The temperature of the ground (assumed a blackbody absorber) [K]
+    F_uv - the TOA flux [W m-2]
+    F_sol - the TOA ~visible flux [W m-2]
+    F_long - the TOA longwave flux, typically 0
+    kappa_uv - the mass absorption coefficient for the UV
+    kappa_sol - the mass absorption coefficient for the visible
+    kappa_long - the mass absorption coefficient for the longwave radiation
+    uv_p_ref - the reference pressure that kappa_uv was measured at
+    sol_p_ref - the reference pressure that kappa_sol was measured at
+    long_p_ref - the reference pressure that kappa_long was measured at
+    R_gas - the specific gas constant for the atmosphere
+    iter_lim - the limit on the number of iterations to perform
+    tol - the desired accuracy for the model TODO. Implement this
+
+    Updates layers directly
+    """
+
+    count = 0
+
+    while count < iter_lim:
+        for i in range(0,len(layers)):
+            UpdateLayerRadTrans(layers, i, F_uv, F_sol, F_long, kappa_uv, \
+                    kappa_sol, kappa_long, uv_p_ref, sol_p_ref, long_p_ref, R_gas)
+        count += 1
+
+
 
 def UpdateLayerRadTrans(layers, ind, F_uv, F_sol, F_long, kappa_uv, \
         kappa_sol, kappa_long, uv_p_ref, sol_p_ref, long_p_ref, R_gas):
@@ -403,7 +463,7 @@ def UpdateLayerRadTrans(layers, ind, F_uv, F_sol, F_long, kappa_uv, \
         
 def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_long,\
         kappa_uv, kappa_sol, kappa_long, uv_p_ref, sol_p_ref, long_p_ref,\
-        T_prof_in=[], N=100, iter_lim=200, tol=1.0E-4, p_toa_in=-1.0):
+        T_prof_in=[], N=100, iter_lim=200, tol=-1.0, p_toa_in=-1.0):
     """
     This is the top level function to balance the atmospheric model. Given the 
     above parameters this will compute the temperature profile, pressure 
@@ -431,7 +491,9 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
     T_prof_in - optional temperature profile can be passed in
     N - the number of atmospheric layers to use in the simulation, defaults to 100
     iter_lim - the number of iterations after which the model will stop
-    tol - the desired tolerance for model accuracy (looks at the temp profile change)
+    tol - the desired tolerance for model accuracy, if -1 it will be when there's a 1% diff 
+          NOTE: tol is currently unused. It was difficult to check for convergence.
+                This is something that will hopefully be implemented in the future
     p_toa_in - the pressure at the top of the atmosphere to be used in the model [Pa].
                Leaving this at the default of -1 will result in the model auto
                generating the pressure at TOA
@@ -456,13 +518,22 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
     layers = LayersInit(N, total_flux, core_mass, core_rad, atmos_mass, R_gas,\
             p_toa=p_toa_in, T_prof=T_prof_in)
 
-    T_profile = np.zeros(N) #initialize temperature profile
-    UpdateTempProfile(layers, T_profile)
+    
+    #check if the tol is -1, if so set it to be 1% of the incoming flux
+    if tol < 0:
+        #TODO - it is difficult to find a metric to compare this against
+        #currently tol isn't used, it should be implemented!
+        tol = total_flux*0.01
 
     count = 0 #keep track of what iteration we're on
-    diff = tol + 1.0 #track our current level of accuracy
+    #diff = tol + 1.0 #track our current level of accuracy
 
-    while count<iter_lim and diff>tol:
+    #before taking loss into account we need an accurate temperature profile
+    BalanceRadiativeTransfer(layers,F_uv,F_sol,F_long,kappa_uv,kappa_sol,\
+                kappa_long,uv_p_ref,sol_p_ref,long_p_ref,R_gas,iter_lim,tol)
+
+    #begin the main section!
+    while count<iter_lim:# and diff>tol: TODO implement tol here...
         """
         This is where all the time will be spent for this algorithm. There are
         lots of seemingly redundant loops below, but they are important. The
@@ -481,47 +552,40 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
         """
 
         #1 - first update the distance to each layer
-        print("STARTING R!!!!!!!!!!!!!!!!!!!")
         for i in range(0,N):
             UpdateLayerDistance(layers, i, R_gas, core_rad)
 
         #2 - next update the radial outflow velocity for each layer
-        if count > 200:
-            #ORL TODO the rad trans needs to run at least once outside this loop
-            #for N times, so all the layers will have flux values!
-            print("STARTING u calc!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            cur_loss = 0.0 #initialize to 0
-            for i in range(0,N):
-                cur_loss = UpdateLayerVelocity(layers, i, R_gas, cur_loss)
-                print("%2d: u=%f"%(i,layers[i].u))
+        cur_loss = 0.0 #initialize to 0
+        for i in range(0,N):
+            cur_loss = UpdateLayerVelocity(layers, i, R_gas, cur_loss)
         
         #3 - update the du/dr for each layer
-        #for i in range(0,N):
-        #    UpdateLayerDuDr(layers, i)
+        for i in range(0,N):
+            UpdateLayerDuDr(layers, i)
 
         #4 - update the pressure for each layer
-        #for i in range(0,N):
-        #    UpdateLayerPressure(layers, i)
+        for i in range(0,N):
+            UpdateLayerPressure(layers, i, R_gas)
 
         #5 - calculate the radiative transfer in the layers
-        print("STARTING RAD TRANS!!!!!!!!!!!!!!!!!!!!!!!!!")
-        for i in range(0,N):
-            UpdateLayerRadTrans(layers, i, F_uv, F_sol, F_long, kappa_uv, \
-                    kappa_sol, kappa_long, uv_p_ref, sol_p_ref, long_p_ref, R_gas)
+        BalanceRadiativeTransfer(layers,F_uv,F_sol,F_long,kappa_uv,kappa_sol,\
+                kappa_long,uv_p_ref,sol_p_ref,long_p_ref,R_gas,iter_lim,tol)
 
-        #Update the temperature profile and calculate the diff
-        #diff = UpdateTempProfile(layers, T_profile)
+        #TODO check the diff here to compare to tol
+        #diff = CheckFluxDiff(layers) #this is an attempt made a tol checking, didn't work well
 
-        ###########uncomment above line for running. TESTING ##################
+        ########### TESTING ##################
         #get the pressure and distance profiles
         p_profile = np.zeros(N)
         r_profile = np.zeros(N)
+        T_profile = np.zeros(N)
         for i in range(0,N):
             p_profile[i] = (layers[i].p_bot+layers[i].p_top)/2.0 #just average it
             r_profile[i] = layers[i].r
+            T_profile[i] = layers[i].T
 
-        UpdateTempProfile(layers, T_profile)
-
+        plt.cla()
         plt.plot(T_profile, p_profile)
         if count == 0:
             plt.gca().invert_yaxis()
@@ -530,25 +594,18 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
         plt.title("Run %d of %d"%(count, iter_lim))
         plt.yscale('log')
         plt.pause(0.05)
-        if count != iter_lim - 1:
-            plt.cla()
         ######################################################################
 
         count += 1
 
-    while True: #THIS IS FOR TESTING. DELTE IT
-        plt.pause(0.05)
-
-    if count == iter_lim:
-        #we ended the while loop due to hitting the iter_lim
-        print("failed to converge before iteration limit!")
-
     #get the pressure and distance profiles
     p_profile = np.zeros(N)
     r_profile = np.zeros(N)
+    T_profile = np.zeros(N) 
     for i in range(0,N):
-        p_profile[i] = (layers[i].p_bot+layers[i].p_top)/2.0 #just average it
+        p_profile[i] = layers[i].p_bot
         r_profile[i] = layers[i].r
+        T_profile[i] = layers[i].T
 
     #calculate the mass flux loss rate
     u_top = layers[0].u
@@ -565,32 +622,58 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
 
 
 
-def test():
+def kinda_earth_test():
     results = BalanceAtmosphere(M_Earth, R_Earth, 5.148E18, 285.0, 0.0, 240.0, 0.0,\
-        0.0, 0.0, 0.05, 1.0, 1.0, 1.0E4,\
-        T_prof_in=[], N=100, iter_lim=500, tol=1.0E-4, p_toa_in=-1.0)
+        0.0, 0.0, 0.01, 1.0E4, 1.0, 1.0E4,\
+        T_prof_in=[], N=100, iter_lim=200, tol=-1.0, p_toa_in=-1.0)
 
     p_profile, r_profile, T_profile, mass_flux = results
 
-    print(T_profile)
+    print("Finished with mass flux of: ", mass_flux)
+
+    fig, ax1 = plt.subplots()
+    ax1.plot(T_profile, (r_profile-R_Earth)/1000.0, color='white')
+    ax1.set_ylabel("Altitude [km]")
+    ax1.set_xlabel("Temperature [K]")
+
+    ax2 = ax1.twinx()
+    ax2.plot(T_profile, p_profile)
+    ax2.invert_yaxis()
+    ax2.set_ylabel("Pressure [Pa]")
+    ax2.set_yscale('log')
+
+    plt.title("Temperature Profile")
+    plt.show()
+
+def small_moon_test():
+    Europa_Mass = 0.008*M_Earth
+    Europa_Radius = 0.245*R_Earth
+    results = BalanceAtmosphere(Europa_Mass, Europa_Radius, 5.148E18, 285.0, 0.0, 240.0, 0.0,\
+        0.0, 0.0, 0.01, 1.0E4, 1.0, 1.0E4,\
+        T_prof_in=[], N=100, iter_lim=200, tol=-1.0, p_toa_in=-1.0)
+
+    p_profile, r_profile, T_profile, mass_flux = results
 
     print("Finished with mass flux of: ", mass_flux)
 
-    plt.plot(T_profile[::-1], p_profile)
-    plt.xlabel("Temp [K]")
-    plt.ylabel("Pressure [Pa]")
+    fig, ax1 = plt.subplots()
+    ax1.plot(T_profile, (r_profile-Europa_Radius)/1000.0, color='red')
+    ax1.set_ylabel("Altitude [km]")
+    ax1.set_xlabel("Temperature [K]")
+
+    ax2 = ax1.twinx()
+    ax2.plot(T_profile, p_profile)
+    ax2.invert_yaxis()
+    ax2.set_ylabel("Pressure [Pa]")
+    ax2.set_yscale('log')
+
+    plt.title("Temperature Profile")
     plt.show()
 
 
-test()
 
 
-
-
-
-
-
-
+small_moon_test()
 
 
 
