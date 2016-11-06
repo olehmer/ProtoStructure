@@ -66,7 +66,6 @@ def CalculateTopU(layer, R_gas):
         return (0.0,0.0)
     else:
         cur_loss = 4.0*pi*layer.rho*u*layer.r**2.0
-        print("loss fraction = %f"%(cur_loss/layer.m))
         return (cur_loss, u) 
 
 
@@ -98,7 +97,6 @@ def UpdateLayerVelocity(layers, ind, R_gas, cur_loss):
     if ind==0:
         #this is the top layer, calculate the loss rate from the top layer
         cur_loss, u = CalculateTopU(layers[ind], R_gas)
-        print("u=%f, cur_loss=%f"%(u, cur_loss))
         layers[ind].u = u
     else:
         #not the top layer, calculate u based on cur_loss
@@ -575,6 +573,7 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
         #TODO check the diff here to compare to tol
         #diff = CheckFluxDiff(layers) #this is an attempt made a tol checking, didn't work well
 
+        """
         ########### TESTING ##################
         #get the pressure and distance profiles
         p_profile = np.zeros(N)
@@ -595,6 +594,13 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
         plt.yscale('log')
         plt.pause(0.05)
         ######################################################################
+        """
+
+        #print % done for convencience
+        percent_done = str(round(float(count)*1000.0/float(iter_lim))/10.0) + "% Done"
+        sys.stderr.write('\r'+percent_done)
+        sys.stderr.flush()
+
 
         count += 1
 
@@ -613,6 +619,10 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
     rho_top = layers[0].rho
     mass_flux = 4.0*pi*rho_top*u_top*r_top**2.0 #loss rate [kg s-1]
 
+    #before returning write a new line after the % done line
+    sys.stderr.write('\r'+ "100% Done!" + '\n')
+    sys.stderr.flush()
+
     return (p_profile, r_profile, T_profile, mass_flux)
 
 
@@ -625,7 +635,7 @@ def BalanceAtmosphere(core_mass, core_rad, atmos_mass, R_gas, F_uv, F_sol, F_lon
 def kinda_earth_test():
     results = BalanceAtmosphere(M_Earth, R_Earth, 5.148E18, 285.0, 0.0, 240.0, 0.0,\
         0.0, 0.0, 0.01, 1.0E4, 1.0, 1.0E4,\
-        T_prof_in=[], N=100, iter_lim=200, tol=-1.0, p_toa_in=-1.0)
+        T_prof_in=[], N=200, iter_lim=200, tol=-1.0, p_toa_in=-1.0)
 
     p_profile, r_profile, T_profile, mass_flux = results
 
@@ -650,7 +660,7 @@ def small_moon_test():
     Europa_Radius = 0.245*R_Earth
     results = BalanceAtmosphere(Europa_Mass, Europa_Radius, 5.148E18, 285.0, 0.0, 240.0, 0.0,\
         0.0, 0.0, 0.01, 1.0E4, 1.0, 1.0E4,\
-        T_prof_in=[], N=100, iter_lim=200, tol=-1.0, p_toa_in=-1.0)
+        T_prof_in=[], N=200, iter_lim=300, tol=-1.0, p_toa_in=-1.0)
 
     p_profile, r_profile, T_profile, mass_flux = results
 
@@ -674,7 +684,7 @@ def small_moon_test():
 
 
 small_moon_test()
-
+#kinda_earth_test()
 
 
 
